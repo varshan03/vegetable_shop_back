@@ -57,18 +57,34 @@ app.get('/api/products', async (req,res) => {
     res.json(rows);
   } catch(err){ res.status(500).json({ error: 'Server error' }); }
 });
-
-// Create product (admin)
-app.post('/api/products', upload.single('image'), async (req,res) => {
+app.get('/api/delivery/person', async (req,res) => {
   try {
-    const { name, price, stock } = req.body;
-    const image_url = req.file ? '/uploads/' + req.file.filename : null;
-    const [result] = await pool.query('INSERT INTO products (name,price,stock,image_url) VALUES (?,?,?,?)', [name, price, stock, image_url]);
-    const [rows] = await pool.query('SELECT * FROM products WHERE id=?', [result.insertId]);
-    res.json(rows[0]);
-  } catch(err){ console.error(err); res.status(500).json({ error: 'Could not create product' }); }
+    const [rows] = await pool.query('SELECT * FROM users WHERE role="delivery"');
+    res.json(rows);
+  } catch(err){ res.status(500).json({ error: 'Server error' }); }
 });
 
+// Create product (admin)
+app.post('/api/products', upload.single('image'), async (req, res) => {
+  try {
+    const { name, price, stock } = req.body;
+    console.log(req.body, req.file);
+
+    const image_url = req.file ? `/uploads/${req.file.filename}` : null;
+
+    const [result] = await pool.query(
+      'INSERT INTO products (name, price, stock, image_url) VALUES (?, ?, ?, ?)',
+      [name, price, stock, image_url]
+    );
+
+    const [rows] = await pool.query('SELECT * FROM products WHERE id=?', [result.insertId]);
+    res.json(rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Could not create product" });
+  }
+});
+  
 // Update product
 app.put('/api/products/:id', upload.single('image'), async (req,res) => {
   try {
@@ -105,7 +121,7 @@ app.post('/api/orders', async (req,res) => {
   // Put stock update + order creation inside a transaction
   const conn = await pool.getConnection();
   try {
-    const { customer_id, items } = req.body; // items: [{product_id, quantity, price}]
+    const { user_id, items, latitude, longitude, address } = req.body; // items: [{product_id, quantity, price}]
     if (!items || items.length === 0) return res.status(400).json({ error: 'No items' });
 
     await conn.beginTransaction();
@@ -119,7 +135,7 @@ app.post('/api/orders', async (req,res) => {
       if (p[0].stock < it.quantity) throw new Error(`Insufficient stock for product ${it.product_id}`);
     }
 
-    const [orderResult] = await conn.query('INSERT INTO orders (customer_id,total_price,status) VALUES (?,?,?)', [customer_id, total, 'pending']);
+    const [orderResult] = await conn.query('INSERT INTO orders (customer_id,total_price,status,latitude,longitude,address) VALUES (?,?,?,?,?,?)', [user_id, total, 'pending', latitude, longitude, address]);
     const orderId = orderResult.insertId;
     // insert items and decrement stock
     for (const it of items) {
@@ -187,11 +203,77 @@ app.get('/api/delivery/tasks/:deliveryId', async (req,res) => {
   const deliveryId = req.params.deliveryId;
   try {
     const [rows] = await pool.query(
-      'SELECT dt.*, o.total_price, o.status as order_status, o.customer_id, u.name as customer_name FROM delivery_tasks dt JOIN orders o ON o.id=dt.order_id LEFT JOIN users u ON u.id=o.customer_id WHERE dt.delivery_person_id=? ORDER BY dt.assigned_at DESC',
+      'SELECT dt.*, o.total_price, o.status as order_status, o.customer_id, o.address, o.latitude, o.longitude, u.name as customer_name FROM delivery_tasks dt JOIN orders o ON o.id=dt.order_id LEFT JOIN users u ON u.id=o.customer_id WHERE dt.delivery_person_id=? ORDER BY dt.assigned_at DESC',
       [deliveryId]
     );
     res.json(rows);
   } catch(err){ console.error(err); res.status(500).json({ error: 'Server error' }); }
+});
+
+
+app.get('/api/orders/user/:userId', async (req, res) => {
+  const userId = req.params.userId;
+  try {
+    const [rows] = await pool.query(
+      `SELECT 
+         o.id AS order_id, o.customer_id, o.status, o.created_at,
+         oi.id AS order_item_id, oi.product_id, oi.quantity, oi.price,
+         p.name AS product_name, p.image_url AS product_image_url
+       FROM orders o
+       JOIN order_items oi ON o.id = oi.order_id
+       JOIN products p ON oi.product_id = p.id
+       WHERE o.customer_id = ?`,
+      [userId]
+    );
+
+    // Group items under each order
+    const orders = {};
+    rows.forEach(row => {
+      if (!orders[row.order_id]) {
+        orders[row.order_id] = {
+          order_id: row.order_id,
+          customer_id: row.customer_id,
+          status: row.status,
+          created_at: row.created_at,
+          total_price: 0,
+          items: []
+        };
+      }
+      orders[row.order_id].items.push({
+        order_item_id: row.order_item_id,
+        product_id: row.product_id,
+        name: row.product_name,
+        image_url: row.product_image_url,
+        quantity: row.quantity,
+        price: row.price
+      });
+      orders[row.order_id].total_price += row.price * row.quantity;
+    });
+
+    res.json(Object.values(orders));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+
+app.post('/api/orders/assign', async (req,res) => {
+  try {
+    const { order_id, delivery_person_id } = req.body;
+    await pool.query('UPDATE orders SET status=? WHERE id=?', ['assigned', order_id]);
+    const [r] = await pool.query('INSERT INTO delivery_tasks (order_id, delivery_person_id, status) VALUES (?,?,?)', [order_id, delivery_person_id, 'assigned']);
+    res.json({ success: true, taskId: r.insertId });
+  } catch(err){ console.error(err); res.status(500).json({ error: 'Could not assign' }); }
+});
+
+
+app.post('/api/signup', async (req,res) => {
+  try {
+    const { name, email, password } = req.body;
+    const [r] = await pool.query('INSERT INTO users (name,email,password) VALUES (?,?,?)', [name, email, password]);
+    res.json({ success: true, userId: r.insertId });
+  } catch(err){ console.error(err); res.status(500).json({ error: 'Could not signup' }); }
 });
 
 // Simple server health
