@@ -257,6 +257,77 @@ app.get('/api/orders/user/:userId', async (req, res) => {
   }
 });
 
+// Get specific order by ID for delivery tracking
+app.get('/api/orders/:orderId', async (req, res) => {
+  const orderId = req.params.orderId;
+  try {
+    // Get order details
+    const [orderRows] = await pool.query(
+      `SELECT o.*, u.name as customer_name, u.email as customer_email
+       FROM orders o 
+       LEFT JOIN users u ON u.id = o.customer_id 
+       WHERE o.id = ?`,
+      [orderId]
+    );
+
+    if (orderRows.length === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const order = orderRows[0];
+
+    // Get order items
+    const [itemRows] = await pool.query(
+      `SELECT oi.*, p.name, p.image_url 
+       FROM order_items oi 
+       LEFT JOIN products p ON p.id = oi.product_id 
+       WHERE oi.order_id = ?`,
+      [orderId]
+    );
+
+    order.items = itemRows;
+
+    // Get delivery partner info if assigned
+    const [deliveryRows] = await pool.query(
+      `SELECT dt.*, u.name as delivery_partner_name, u.email as delivery_partner_email
+       FROM delivery_tasks dt
+       LEFT JOIN users u ON u.id = dt.delivery_person_id
+       WHERE dt.order_id = ?`,
+      [orderId]
+    );
+
+    if (deliveryRows.length > 0) {
+      order.delivery_partner = {
+        name: deliveryRows[0].delivery_partner_name,
+        email: deliveryRows[0].delivery_partner_email,
+        task_status: deliveryRows[0].status,
+        assigned_at: deliveryRows[0].assigned_at
+      };
+    }
+
+    // Format the response to match frontend expectations
+    const response = {
+      order_id: order.id,
+      customer_id: order.customer_id,
+      customer_name: order.customer_name,
+      status: order.status,
+      total_price: order.total_price,
+      created_at: order.created_at,
+      delivery_address: order.address,
+      latitude: order.latitude,
+      longitude: order.longitude,
+      payment_method: 'cod', // Default since not stored in DB
+      items: order.items,
+      delivery_partner: order.delivery_partner || null
+    };
+
+    res.json(response);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 
 app.post('/api/orders/assign', async (req,res) => {
   try {
