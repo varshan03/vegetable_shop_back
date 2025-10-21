@@ -123,6 +123,7 @@ app.post('/api/orders', async (req,res) => {
   try {
     const { user_id, items, latitude, longitude, address } = req.body; // items: [{product_id, quantity, price}]
     if (!items || items.length === 0) return res.status(400).json({ error: 'No items' });
+console.log(req.body);
 
     await conn.beginTransaction();
 
@@ -153,21 +154,77 @@ app.post('/api/orders', async (req,res) => {
 });
 
 // Get orders (optionally by customer)
-app.get('/api/orders', async (req,res) => {
+app.get('/api/orders', async (req, res) => {
   const { customerId } = req.query;
   try {
-    let sql = 'SELECT * FROM orders';
+    let sql = `
+      SELECT o.*, u.name AS customer_name
+      FROM orders o
+      LEFT JOIN users u ON o.customer_id = u.id
+    `;
     const params = [];
-    if (customerId) { sql += ' WHERE customer_id=?'; params.push(customerId); }
-    sql += ' ORDER BY created_at DESC';
-    const [rows] = await pool.query(sql, params);
-    // attach items
-    for (const o of rows) {
-      const [items] = await pool.query('SELECT oi.*, p.name, p.image_url FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id=?', [o.id]);
-      o.items = items;
+
+    if (customerId) {
+      sql += ' WHERE o.customer_id = ?';
+      params.push(customerId);
     }
+
+    sql += ' ORDER BY o.created_at DESC';
+
+    const [rows] = await pool.query(sql, params);
+
+    // Attach order items for each order
+    for (const order of rows) {
+      const [items] = await pool.query(
+        `SELECT oi.*, p.name AS product_name, p.image_url 
+         FROM order_items oi 
+         LEFT JOIN products p ON p.id = oi.product_id 
+         WHERE oi.order_id = ?`,
+        [order.id]
+      );
+      order.items = items;
+    }
+
     res.json(rows);
-  } catch(err){ console.error(err); res.status(500).json({ error: 'Server error' }); }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+
+app.get('/api/orders/new', async (req, res) => {
+  try {
+    let sql = `
+      SELECT o.*, u.name AS customer_name
+      FROM orders o
+      LEFT JOIN users u ON o.customer_id = u.id
+    `;
+    const params = [];
+
+
+
+    sql += ' ORDER BY o.created_at DESC';
+
+    const [rows] = await pool.query(sql, params);
+
+    // Attach order items for each order
+    for (const order of rows) {
+      const [items] = await pool.query(
+        `SELECT oi.*, p.name AS product_name, p.image_url 
+         FROM order_items oi 
+         LEFT JOIN products p ON p.id = oi.product_id 
+         WHERE oi.order_id = ?`,
+        [order.id]
+      );
+      order.items = items;
+    }
+
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
 // ---------- Delivery tasks ----------
@@ -263,7 +320,7 @@ app.get('/api/orders/:orderId', async (req, res) => {
   try {
     // Get order details
     const [orderRows] = await pool.query(
-      `SELECT o.*, u.name as customer_name, u.email as customer_email
+      `SELECT o.*, u.name as customer_name, u.email as customer_email, u.phone_number as customer_phone
        FROM orders o 
        LEFT JOIN users u ON u.id = o.customer_id 
        WHERE o.id = ?`,
@@ -289,7 +346,7 @@ app.get('/api/orders/:orderId', async (req, res) => {
 
     // Get delivery partner info if assigned
     const [deliveryRows] = await pool.query(
-      `SELECT dt.*, u.name as delivery_partner_name, u.email as delivery_partner_email
+      `SELECT dt.*, u.name as delivery_partner_name, u.email as delivery_partner_email , u.phone_number as delivery_partner_phone
        FROM delivery_tasks dt
        LEFT JOIN users u ON u.id = dt.delivery_person_id
        WHERE dt.order_id = ?`,
@@ -300,6 +357,7 @@ app.get('/api/orders/:orderId', async (req, res) => {
       order.delivery_partner = {
         name: deliveryRows[0].delivery_partner_name,
         email: deliveryRows[0].delivery_partner_email,
+        phone: deliveryRows[0].delivery_partner_phone,
         task_status: deliveryRows[0].status,
         assigned_at: deliveryRows[0].assigned_at
       };
@@ -318,7 +376,8 @@ app.get('/api/orders/:orderId', async (req, res) => {
       longitude: order.longitude,
       payment_method: 'cod', // Default since not stored in DB
       items: order.items,
-      delivery_partner: order.delivery_partner || null
+      delivery_partner: order.delivery_partner || null,
+      delivery_partner_phone: order.delivery_partner_phone || null
     };
 
     res.json(response);
