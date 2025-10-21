@@ -50,6 +50,14 @@ app.post('/api/users', async (req, res) => {
   }
 });
 
+
+app.get('/api/users', async (req,res) => {
+  try {
+    const [rows] = await pool.query('SELECT id,name,email,role FROM users');
+    res.json(rows);
+  } catch(err){ res.status(500).json({ error: 'Server error' }); }
+});
+
 // ---------- Products ----------
 app.get('/api/products', async (req,res) => {
   try {
