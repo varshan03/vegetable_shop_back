@@ -10,6 +10,17 @@ app.use(cors());
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+// Ensure products table has new columns (idempotent)
+(async () => {
+  try {
+    await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS description TEXT");
+    await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS category VARCHAR(50) DEFAULT 'Vegetables'");
+    await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS uom VARCHAR(20) DEFAULT 'kg'");
+  } catch (e) {
+    console.warn('Skipping products column migration:', e.message);
+  }
+})();
+
 // multer for image uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, path.join(__dirname, 'uploads')),
@@ -61,7 +72,21 @@ app.get('/api/users', async (req,res) => {
 // ---------- Products ----------
 app.get('/api/products', async (req,res) => {
   try {
-    const [rows] = await pool.query('SELECT * FROM products ORDER BY id DESC');
+    const { q, category } = req.query;
+    let sql = 'SELECT * FROM products';
+    const params = [];
+    const where = [];
+    if (q) {
+      where.push('(name LIKE ? OR IFNULL(description, "") LIKE ? OR IFNULL(category, "") LIKE ? OR IFNULL(uom, "") LIKE ?)');
+      params.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
+    }
+    if (category) {
+      where.push('category = ?');
+      params.push(category);
+    }
+    if (where.length) sql += ' WHERE ' + where.join(' AND ');
+    sql += ' ORDER BY id DESC';
+    const [rows] = await pool.query(sql, params);
     res.json(rows);
   } catch(err){ res.status(500).json({ error: 'Server error' }); }
 });
@@ -75,14 +100,15 @@ app.get('/api/delivery/person', async (req,res) => {
 // Create product (admin)
 app.post('/api/products', upload.single('image'), async (req, res) => {
   try {
-    const { name, price, stock } = req.body;
+    const { name, price, stock, description, category, uom } = req.body;
     console.log(req.body, req.file);
 
     const image_url = req.file ? `/uploads/${req.file.filename}` : null;
+console.log(image_url);
 
     const [result] = await pool.query(
-      'INSERT INTO products (name, price, stock, image_url) VALUES (?, ?, ?, ?)',
-      [name, price, stock, image_url]
+      'INSERT INTO products (name, price, stock, image_url, description, category, uom) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [name, price, stock, image_url, description || null, category || 'Vegetables', uom || 'kg']
     );
 
     const [rows] = await pool.query('SELECT * FROM products WHERE id=?', [result.insertId]);
@@ -97,7 +123,7 @@ app.post('/api/products', upload.single('image'), async (req, res) => {
 app.put('/api/products/:id', upload.single('image'), async (req,res) => {
   try {
     const id = req.params.id;
-    const { name, price, stock } = req.body;
+    const { name, price, stock, description, category, uom } = req.body;
     let image_url;
     if (req.file) image_url = '/uploads/' + req.file.filename;
     // build query dynamically
@@ -106,7 +132,14 @@ app.put('/api/products/:id', upload.single('image'), async (req,res) => {
     if (name) { updates.push('name=?'); params.push(name); }
     if (price) { updates.push('price=?'); params.push(price); }
     if (stock !== undefined) { updates.push('stock=?'); params.push(stock); }
+    if (description !== undefined) { updates.push('description=?'); params.push(description); }
+    if (category) { updates.push('category=?'); params.push(category); }
+    if (uom) { updates.push('uom=?'); params.push(uom); }
     if (image_url) { updates.push('image_url=?'); params.push(image_url); }
+    if (updates.length === 0) {
+      const [rows] = await pool.query('SELECT * FROM products WHERE id=?', [id]);
+      return res.json(rows[0]);
+    }
     params.push(id);
     const sql = `UPDATE products SET ${updates.join(', ')} WHERE id=?`;
     await pool.query(sql, params);
