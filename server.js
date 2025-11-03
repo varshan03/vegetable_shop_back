@@ -51,9 +51,9 @@ app.post('/api/login', async (req, res) => {
 app.post('/api/users', async (req, res) => {
   const { name, email, password, role='customer' } = req.body;
   try {
-    const [result] = await pool.query('INSERT INTO users (name,email,password,role) VALUES (?,?,?,?)', [name,email,password,role]);
+    const [result] = await pool.query('INSERT INTO users (name,email,password,role,phone_number) VALUES (?,?,?,?,?,?)', [name,email,password,role,phone_number]);
     const id = result.insertId;
-    const [rows] = await pool.query('SELECT id,name,email,role FROM users WHERE id=?', [id]);
+    const [rows] = await pool.query('SELECT id,name,email,role,phone_number FROM users WHERE id=?', [id]);
     res.json(rows[0]);
   } catch (err) {
     console.error(err);
@@ -64,7 +64,7 @@ app.post('/api/users', async (req, res) => {
 
 app.get('/api/users', async (req,res) => {
   try {
-    const [rows] = await pool.query('SELECT id,name,email,role FROM users');
+    const [rows] = await pool.query('SELECT id,name,email,role,phone_number FROM users');
     res.json(rows);
   } catch(err){ res.status(500).json({ error: 'Server error' }); }
 });
