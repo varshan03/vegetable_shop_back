@@ -162,9 +162,9 @@ app.post('/api/orders', async (req,res) => {
   // Put stock update + order creation inside a transaction
   const conn = await pool.getConnection();
   try {
-    const { user_id, items, latitude, longitude, address } = req.body; // items: [{product_id, quantity, price}]
+    const { user_id, items, latitude, longitude, delivery_address } = req.body; // items: [{product_id, quantity, price}]
     if (!items || items.length === 0) return res.status(400).json({ error: 'No items' });
-console.log(req.body);
+      console.log(req.body);
 
     await conn.beginTransaction();
 
@@ -177,7 +177,7 @@ console.log(req.body);
       if (p[0].stock < it.quantity) throw new Error(`Insufficient stock for product ${it.product_id}`);
     }
 
-    const [orderResult] = await conn.query('INSERT INTO orders (customer_id,total_price,status,latitude,longitude,address) VALUES (?,?,?,?,?,?)', [user_id, total, 'pending', latitude, longitude, address]);
+    const [orderResult] = await conn.query('INSERT INTO orders (customer_id,total_price,status,latitude,longitude,address) VALUES (?,?,?,?,?,?)', [user_id, total, 'pending', latitude, longitude, delivery_address]);
     const orderId = orderResult.insertId;
     // insert items and decrement stock
     for (const it of items) {

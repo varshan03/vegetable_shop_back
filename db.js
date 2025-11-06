@@ -4,15 +4,28 @@ const mysql = require('mysql2/promise');
 
 
 const pool = mysql.createPool({
-  host: 'localhost',
-  user: 'root',
-  password: 'root',
+  host: '59.92.63.35',
+  user: 'rr',
+  password: 'rr@12345678',
   database: 'veg_shop',
   // port: 3306,
   waitForConnections: true,
   connectionLimit: 10,
   // ssl: { rejectUnauthorized: true }
 });
+
+
+
+// const pool = mysql.createPool({
+//   host: 'localhost',
+//   user: 'root',
+//   password: 'root',
+//   database: 'veg_shop',
+//   // port: 3306,
+//   waitForConnections: true,
+//   connectionLimit: 10,
+//   // ssl: { rejectUnauthorized: true }
+// });
 
 // const pool = mysql.createPool({
 //   host: 'gateway01.ap-southeast-1.prod.aws.tidbcloud.com',
