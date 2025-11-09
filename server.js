@@ -16,21 +16,20 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
     await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS description TEXT");
     await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS category VARCHAR(50) DEFAULT 'Vegetables'");
     await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS uom VARCHAR(20) DEFAULT 'kg'");
+    await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS image_blob LONGBLOB");
+    await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS image_mime_type VARCHAR(50)");
+    console.log('Database schema updated successfully');
   } catch (e) {
     console.warn('Skipping products column migration:', e.message);
   }
 })();
 
-// multer for image uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, path.join(__dirname, 'uploads')),
-  filename: (req, file, cb) => {
-    const time = Date.now();
-    const ext = path.extname(file.originalname);
-    cb(null, `${time}-${file.fieldname}${ext}`);
-  }
+// multer for image uploads - using memory storage for blob
+const storage = multer.memoryStorage();
+const upload = multer({ 
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
 });
-const upload = multer({ storage });
 
 // ---------- Users / Login (simple) ----------
 app.post('/api/login', async (req, res) => {
@@ -73,7 +72,8 @@ app.get('/api/users', async (req,res) => {
 app.get('/api/products', async (req,res) => {
   try {
     const { q, category } = req.query;
-    let sql = 'SELECT * FROM products';
+    // Exclude blob data for performance - only send metadata
+    let sql = 'SELECT id, name, price, stock, image_url, description, category, uom, image_mime_type FROM products';
     const params = [];
     const where = [];
     if (q) {
@@ -88,7 +88,10 @@ app.get('/api/products', async (req,res) => {
     sql += ' ORDER BY id DESC';
     const [rows] = await pool.query(sql, params);
     res.json(rows);
-  } catch(err){ res.status(500).json({ error: 'Server error' }); }
+  } catch(err){ 
+    console.error('Error fetching products:', err);
+    res.status(500).json({ error: 'Server error', message: err.message }); 
+  }
 });
 app.get('/api/delivery/person', async (req,res) => {
   try {
@@ -103,15 +106,30 @@ app.post('/api/products', upload.single('image'), async (req, res) => {
     const { name, price, stock, description, category, uom } = req.body;
     console.log(req.body, req.file);
 
-    const image_url = req.file ? `/uploads/${req.file.filename}` : null;
-console.log(image_url);
+    let image_blob = null;
+    let image_mime_type = null;
+    let image_url = null;
+
+    if (req.file) {
+      image_blob = req.file.buffer;
+      image_mime_type = req.file.mimetype;
+      // Store a reference URL that points to our blob endpoint
+      image_url = `/api/products/image/`; // Will append ID after insert
+    }
 
     const [result] = await pool.query(
-      'INSERT INTO products (name, price, stock, image_url, description, category, uom) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [name, price, stock, image_url, description || null, category || 'Vegetables', uom || 'kg']
+      'INSERT INTO products (name, price, stock, image_url, description, category, uom, image_blob, image_mime_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [name, price, stock, image_url, description || null, category || 'Vegetables', uom || 'kg', image_blob, image_mime_type]
     );
 
-    const [rows] = await pool.query('SELECT * FROM products WHERE id=?', [result.insertId]);
+    const productId = result.insertId;
+    
+    // Update image_url with the product ID
+    if (image_url) {
+      await pool.query('UPDATE products SET image_url = ? WHERE id = ?', [`/api/products/image/${productId}`, productId]);
+    }
+
+    const [rows] = await pool.query('SELECT id, name, price, stock, image_url, description, category, uom, image_mime_type FROM products WHERE id=?', [productId]);
     res.json(rows[0]);
   } catch (err) {
     console.error(err);
@@ -124,28 +142,58 @@ app.put('/api/products/:id', upload.single('image'), async (req,res) => {
   try {
     const id = req.params.id;
     const { name, price, stock, description, category, uom } = req.body;
-    let image_url;
-    if (req.file) image_url = '/uploads/' + req.file.filename;
+    
     // build query dynamically
     const updates = [];
     const params = [];
+    
     if (name) { updates.push('name=?'); params.push(name); }
     if (price) { updates.push('price=?'); params.push(price); }
     if (stock !== undefined) { updates.push('stock=?'); params.push(stock); }
     if (description !== undefined) { updates.push('description=?'); params.push(description); }
     if (category) { updates.push('category=?'); params.push(category); }
     if (uom) { updates.push('uom=?'); params.push(uom); }
-    if (image_url) { updates.push('image_url=?'); params.push(image_url); }
+    
+    if (req.file) {
+      updates.push('image_blob=?');
+      params.push(req.file.buffer);
+      updates.push('image_mime_type=?');
+      params.push(req.file.mimetype);
+      updates.push('image_url=?');
+      params.push(`/api/products/image/${id}`);
+    }
+    
     if (updates.length === 0) {
-      const [rows] = await pool.query('SELECT * FROM products WHERE id=?', [id]);
+      const [rows] = await pool.query('SELECT id, name, price, stock, image_url, description, category, uom, image_mime_type FROM products WHERE id=?', [id]);
       return res.json(rows[0]);
     }
+    
     params.push(id);
     const sql = `UPDATE products SET ${updates.join(', ')} WHERE id=?`;
     await pool.query(sql, params);
-    const [rows] = await pool.query('SELECT * FROM products WHERE id=?', [id]);
+    const [rows] = await pool.query('SELECT id, name, price, stock, image_url, description, category, uom, image_mime_type FROM products WHERE id=?', [id]);
     res.json(rows[0]);
   } catch(err){ console.error(err); res.status(500).json({ error: 'Could not update product' }); }
+});
+
+// Get product image as blob
+app.get('/api/products/image/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const [rows] = await pool.query('SELECT image_blob, image_mime_type FROM products WHERE id=?', [id]);
+    
+    if (rows.length === 0 || !rows[0].image_blob) {
+      return res.status(404).json({ error: 'Image not found' });
+    }
+    
+    const product = rows[0];
+    res.set('Content-Type', product.image_mime_type || 'image/jpeg');
+    res.set('Cache-Control', 'public, max-age=86400'); // Cache for 1 day
+    res.send(product.image_blob);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Could not retrieve image' });
+  }
 });
 
 // Delete product
