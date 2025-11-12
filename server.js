@@ -188,7 +188,9 @@ app.get('/api/products/image/:id', async (req, res) => {
     
     const product = rows[0];
     res.set('Content-Type', product.image_mime_type || 'image/jpeg');
-    res.set('Cache-Control', 'public, max-age=86400'); // Cache for 1 day
+    // Disable caching so updated images reflect immediately in the UI
+    // If you want caching later, consider adding ETag/Last-Modified and conditional requests instead
+    res.set('Cache-Control', 'no-store');
     res.send(product.image_blob);
   } catch (err) {
     console.error(err);
