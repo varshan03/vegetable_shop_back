@@ -212,7 +212,7 @@ app.post('/api/orders', async (req,res) => {
   // Put stock update + order creation inside a transaction
   const conn = await pool.getConnection();
   try {
-    const { user_id, items, latitude, longitude, delivery_address } = req.body; // items: [{product_id, quantity, price}]
+    const { user_id, items, delivery_address, address_details, payment_method } = req.body; // items: [{product_id, quantity, price}]
     if (!items || items.length === 0) return res.status(400).json({ error: 'No items' });
       console.log(req.body);
 
@@ -227,7 +227,18 @@ app.post('/api/orders', async (req,res) => {
       if (p[0].stock < it.quantity) throw new Error(`Insufficient stock for product ${it.product_id}`);
     }
 
-    const [orderResult] = await conn.query('INSERT INTO orders (customer_id,total_price,status,latitude,longitude,address) VALUES (?,?,?,?,?,?)', [user_id, total, 'pending', latitude, longitude, delivery_address]);
+    // Extract address details with defaults
+    const houseNo = address_details?.houseNo || '';
+    const street = address_details?.street || '';
+    const landmark = address_details?.landmark || '';
+    const area = address_details?.area || '';
+    const city = address_details?.city || '';
+    const pincode = address_details?.pincode || '';
+
+    const [orderResult] = await conn.query(
+      'INSERT INTO orders (customer_id,total_price,status,address,house_no,street,landmark,area,city,pincode,payment_method) VALUES (?,?,?,?,?,?,?,?,?,?,?)', 
+      [user_id, total, 'pending', delivery_address, houseNo, street, landmark, area, city, pincode, payment_method]
+    );
     const orderId = orderResult.insertId;
     // insert items and decrement stock
     for (const it of items) {
@@ -249,7 +260,9 @@ app.get('/api/orders', async (req, res) => {
   const { customerId } = req.query;
   try {
     let sql = `
-      SELECT o.*, u.name AS customer_name
+      SELECT o.id, o.customer_id, o.total_price, o.status, o.created_at, o.address,
+             o.house_no, o.street, o.landmark, o.area, o.city, o.pincode, o.payment_method,
+             u.name AS customer_name
       FROM orders o
       LEFT JOIN users u ON o.customer_id = u.id
     `;
@@ -287,7 +300,9 @@ app.get('/api/orders', async (req, res) => {
 app.get('/api/orders/new', async (req, res) => {
   try {
     let sql = `
-      SELECT o.*, u.name AS customer_name
+      SELECT o.id, o.customer_id, o.total_price, o.status, o.created_at, o.address,
+             o.house_no, o.street, o.landmark, o.area, o.city, o.pincode, o.payment_method,
+             u.name AS customer_name
       FROM orders o
       LEFT JOIN users u ON o.customer_id = u.id
     `;
@@ -351,7 +366,7 @@ app.get('/api/delivery/tasks/:deliveryId', async (req,res) => {
   const deliveryId = req.params.deliveryId;
   try {
     const [rows] = await pool.query(
-      'SELECT dt.*, o.total_price, o.status as order_status, o.customer_id, o.address, o.latitude, o.longitude, u.name as customer_name FROM delivery_tasks dt JOIN orders o ON o.id=dt.order_id LEFT JOIN users u ON u.id=o.customer_id WHERE dt.delivery_person_id=? ORDER BY dt.assigned_at DESC',
+      'SELECT dt.*, o.total_price, o.status as order_status, o.customer_id, o.address, o.house_no, o.street, o.landmark, o.area, o.city, o.pincode, o.payment_method, u.name as customer_name FROM delivery_tasks dt JOIN orders o ON o.id=dt.order_id LEFT JOIN users u ON u.id=o.customer_id WHERE dt.delivery_person_id=? ORDER BY dt.assigned_at DESC',
       [deliveryId]
     );
     res.json(rows);
@@ -364,7 +379,8 @@ app.get('/api/orders/user/:userId', async (req, res) => {
   try {
     const [rows] = await pool.query(
       `SELECT 
-         o.id AS order_id, o.customer_id, o.status, o.created_at,
+         o.id AS order_id, o.customer_id, o.status, o.created_at, o.address,
+         o.house_no, o.street, o.landmark, o.area, o.city, o.pincode, o.payment_method,
          oi.id AS order_item_id, oi.product_id, oi.quantity, oi.price,
          p.name AS product_name, p.image_url AS product_image_url
        FROM orders o
